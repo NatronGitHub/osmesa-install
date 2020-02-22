@@ -115,13 +115,13 @@ if [ "$osname" = Darwin ]; then
         # If using libc++ (see https://trac.macports.org/wiki/LibcxxOnOlderSystems), compile
         # everything with clang-5.0
         if [ -f /opt/local/etc/macports/macports.conf ] && grep -q -e '^cxx_stdlib.*libc\+\+' /opt/local/etc/macports/macports.conf; then
-            if [[ $(type -P clang-mp-5.0) ]]; then
-		CC=clang-mp-5.0
-		CXX=clang++-mp-5.0
-		OSDEMO_LD="clang++-mp-5.0 -stdlib=libc++"
+            if [[ $(type -P clang-mp-8.0) ]]; then
+		CC=clang-mp-8.0
+		CXX=clang++-mp-8.0
+		OSDEMO_LD="clang++-mp-8.0 -stdlib=libc++"
 	    else
-		echo "Error: Please install clang 5 using the following command:"
-		echo "sudo port install clang-5.0"
+		echo "Error: Please install clang 8 using the following command:"
+		echo "sudo port install clang-8.0"
 	    fi
         else
             # This project is affected by a bug in Apple's gcc driver driver that was fixed in the apple-gcc42 port:
@@ -186,6 +186,11 @@ if [ -n "${SDKROOT+x}" ]; then
     echo "- OSX SDK root is $SDKROOT"
 fi
 
+# see https://stackoverflow.com/a/24067243
+function version_gt() {
+    #test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"; # requires GNU sort
+    test "$(printf '%s\n' "$@" sed 's/\b\([0-9]\)\b/0\1/g' versions.txt  | sort | sed 's/\b0\([0-9]\)/\1/g' | head -n 1)" != "$1"; # version numbers can have two digits at most (i.e. 0 to 99)
+}
 
 # On MacPorts, building Mesa requires the following packages:
 # sudo port install xorg-glproto xorg-libXext xorg-libXdamage xorg-libXfixes xorg-libxcb
@@ -251,10 +256,24 @@ if [ "$osmesadriver" = 3 ] || [ "$osmesadriver" = 4 ]; then
         else
             cmakegen="Unix Makefiles" # can be "MSYS Makefiles" on MSYS
             cmake_archflags=""
-            llvm_patches=""
+	    # llvm 4.0.1 patches from:
+	    # https://github.com/macports/macports-ports/tree/edc0cff9e8a3b28964a48ae2a4ceddb5e617d906/lang/llvm-4.0
+	    # llvm 5.0.2 patches from:
+	    # https://github.com/macports/macports-ports/tree/b34bfd6652fad3994effcb1f14486c8ab5431a3b/lang/llvm-5.0
+	    # ORC patch to fix building with GCC 8.x, see:
+	    # https://bugzilla.redhat.com/show_bug.cgi?id=1540620
+            llvm_patches="\
+	    0001-Fix-return-type-in-ORC-readMem-client-interface.patch \
+	    0001-Set-the-Mach-O-CPU-Subtype-to-ppc7400-when-targeting.patch \
+	    0002-Define-EXC_MASK_CRASH-and-MACH_EXCEPTION_CODES-if-th.patch \
+	    0003-MacPorts-Only-Don-t-embed-the-deployment-target-in-t.patch \
+	    0004-Fix-build-issues-pre-Lion-due-to-missing-a-strnlen-d.patch \
+	    0005-Dont-build-LibFuzzer-pre-Lion-due-to-missing-__threa.patch \
+	    0005-Threading-Only-call-pthread_setname_np-on-SnowLeopar.patch \
+	    "
             if [ "$osname" = Darwin ] && [ "$osver" = 10 ]; then
                 # On Snow Leopard, build universal
-                cmake_archflags="-DCMAKE_OSX_ARCHITECTURES=i386;x86_64"
+                cmake_archflags="$cmake_archflags -DCMAKE_OSX_ARCHITECTURES=i386;x86_64"
                 # Proxy for eliminating the dependency on native TLS
                 # http://trac.macports.org/ticket/46887
                 #cmake_archflags="$cmake_archflags -DLLVM_ENABLE_BACKTRACES=OFF" # flag was added to the common flags below, we don't need backtraces anyway
@@ -266,7 +285,7 @@ if [ "$osmesadriver" = 3 ] || [ "$osmesadriver" = 4 ]; then
             if [ "$osname" = Darwin ]; then
                 # Redundant - provided for older compilers that do not pass this option to the linker
                 # Address xcode/cmake error: compiler appears to require libatomic, but cannot find it.
-                cmake_archflags="-DLLVM_ENABLE_LIBCXX=ON"
+                cmake_archflags="$cmake_archflags -DLLVM_ENABLE_LIBCXX=ON"
                 if [ "$osver" -ge 12 ]; then
                     # From Mountain Lion onward. We are only building 64bit arch.
                     cmake_archflags="$cmake_archflags -DCMAKE_OSX_ARCHITECTURES=x86_64"
@@ -289,11 +308,6 @@ if [ "$osmesadriver" = 3 ] || [ "$osmesadriver" = 4 ]; then
                      llvm_patches="msys2_add_pi.patch"
                      ;;
             esac
-
-            # Apply ORC patch on LLVM 4.x and 5.x
-            if [ ${llvmversion:0:2} = 4. ] || [ ${llvmversion:0:2} = 5. ]; then
-                llvm_patches="0001-Fix-return-type-in-ORC-readMem-client-interface.patch :$llvm_patches"
-            fi
 
             for i in $llvm_patches; do
                 if [ -f "$srcdir"/patches/llvm-$llvmversion/$i ]; then
@@ -344,14 +358,22 @@ if [ "$osmesadriver" = 3 ] || [ "$osmesadriver" = 4 ]; then
         # could not find installation.
         if [ "$buildllvm" = 0 ]; then
             # advise user to turn on automatic download, build and install option
-            echo "Error: $llvmconfigbinary does not exist, set script variable buildllvm=\${LLVM_BUILD:-0} from 0 to 1 to automatically download and install llvm."
+            echo "Error: $llvmconfigbinary does not exist, set environment variable LLVM_BUILD to 1 to automatically download and install llvm, as in:"
+	    echo "  env LLVM_BUILD=1 $0"
         else
             echo "Error: $llvmconfigbinary does not exist, please install LLVM with RTTI support in $llvmprefix"
             echo " download the LLVM sources from llvm.org, and configure it with:"
             echo " env CC=$CC CXX=$CXX cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$llvmprefix -DBUILD_SHARED_LIBS=OFF -DLLVM_ENABLE_RTTI=1 -DLLVM_REQUIRES_RTTI=1 -DLLVM_ENABLE_PEDANTIC=0 $cmake_archflags"
             echo " env REQUIRES_RTTI=1 make -j${mkjobs}"
         fi
-        exit
+        exit 1
+    else
+	if version_gt $("$llvmconfigbinary" --version) 4.0.1; then
+	    echo "Warning: LLVM version is $($llvmconfigbinary --version), but this script was only tested with versions 3.3 to 4.0.1"
+	    echo "Please modify this script and file a github issue if it works with this version."
+	    echo "Continuing anyway after 10s."
+	    sleep 10
+	fi
     fi
     llvmcomponents="engine mcjit"
     if [ "$debug" = 1 ]; then
@@ -373,7 +395,7 @@ fi
 
 if [ ! -f "mesa-${mesaversion}.tar.gz" ]; then
     echo "* downloading Mesa ${mesaversion}..."
-    curl $curlopts -O "ftp://ftp.freedesktop.org/pub/mesa/mesa-${mesaversion}.tar.gz" || curl $curlopts -O "ftp://ftp.freedesktop.org/pub/mesa/${mesaversion}/mesa-${mesaversion}.tar.gz"
+    curl $curlopts -O "ftp://ftp.freedesktop.org/pub/mesa/mesa-${mesaversion}.tar.gz" || curl $curlopts -O "ftp://ftp.freedesktop.org/pub/mesa/older-versions/${mesaversion/.*/.x}/mesa-${mesaversion}.tar.gz"
 fi
 tar zxf "mesa-${mesaversion}.tar.gz"
 
